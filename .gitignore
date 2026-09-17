@@ -1,0 +1,4 @@
+.env
+extracted_images/
+rag_env/
+vectorstore/
