@@ -1,3 +1,9 @@
+pymupdf
+faiss-cpu
+numpy
 torch
-transformers
-gradio
+unstructured
+langchain-core
+langchain-huggingface
+langchain-text-splitters
+sentence-transformers
