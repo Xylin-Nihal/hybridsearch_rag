@@ -16,7 +16,7 @@ from src.models import (
 from src.pdf_processor import (
     extract_pdf,
     build_sections,
-    print_sections,
+    
 )
 
 from src.chunker import (
@@ -71,7 +71,7 @@ def main():
         print("-" * 80)
 
         print("TYPE:", element["type"])
-        print("CONTENT:", element["content"][:500])
+        print("CONTENT:", element["text"][:500])
     # ========================================================
     # Build sections
     # ========================================================
@@ -80,35 +80,18 @@ def main():
         elements
     )
 
-    print_sections(
+    """print_sections(
         sections
-    )
+    )"""
 
     # ========================================================
     # Build chunks
     # ========================================================
 
     chunks = build_chunks(
-
-        sections,
-
-        embedding_model,
-
-        small_section_tokens=
-            SMALL_SECTION_TOKENS,
-
-        target_chunk_tokens=
-            TARGET_CHUNK_TOKENS,
-
-        max_chunk_tokens=
-            MAX_CHUNK_TOKENS,
-
-        similarity_threshold=
-            SEMANTIC_SIMILARITY_THRESHOLD,
-
-        overlap_sentences=
-            CHUNK_OVERLAP_SENTENCES,
-    )
+    sections,
+    embedding_model
+)
 
     # ========================================================
     # Print chunks

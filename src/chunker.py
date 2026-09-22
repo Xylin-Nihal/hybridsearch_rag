@@ -1,5 +1,31 @@
 import re
 import uuid
+import numpy as np
+
+from src.config import (
+    SMALL_SECTION_TOKENS,
+    TARGET_CHUNK_TOKENS,
+    MAX_CHUNK_TOKENS,
+    SEMANTIC_SIMILARITY_THRESHOLD,
+    CHUNK_OVERLAP_SENTENCES,
+)
+
+
+# ============================================================
+# TOKEN ESTIMATION
+# ============================================================
+
+def estimate_tokens(text):
+    """
+    Approximate token count.
+
+    Later we can replace this with the actual tokenizer.
+    """
+
+    if not text:
+        return 0
+
+    return max(1, len(text) // 4)
 
 
 # ============================================================
@@ -10,12 +36,6 @@ def split_sentences(text):
 
     if not text:
         return []
-
-    # Basic sentence splitter.
-    #
-    # We are deliberately keeping this simple for now.
-    # Later we can replace this with a more robust
-    # sentence segmentation model if necessary.
 
     sentences = re.split(
         r"(?<=[.!?])\s+",
@@ -30,146 +50,88 @@ def split_sentences(text):
 
 
 # ============================================================
-# TOKEN COUNT
+# CREATE TEXT CHUNK
 # ============================================================
 
-def estimate_tokens(text):
+def create_text_chunk(
+    text,
+    section,
+    chunk_index
+):
 
-    if not text:
-        return 0
+    return {
 
-    # Approximate token count.
-    #
-    # This is intentionally simple because the actual
-    # embedding tokenizer depends on the API provider.
-    #
-    # Rough approximation:
-    #
-    # 1 token ≈ 4 characters
-    #
+        "chunk_id": str(uuid.uuid4()),
 
-    return max(
-        1,
-        len(text) // 4
-    )
+        "chunk_type": "text",
 
+        "content": text,
 
-# ============================================================
-# CONVERT SECTION TO TEXT
-# ============================================================
+        "token_count": estimate_tokens(text),
 
-def section_to_text(section):
+        "section_id": section["section_id"],
 
-    parts = []
+        "section_title": section["section_title"],
 
-    for element in section["elements"]:
+        "section_path": section["section_path"],
 
-        element_type = element["type"]
+        "chunk_index": chunk_index,
 
-        content = element["content"]
+        # No visual associated with this chunk
+        "image_base64": None,
 
-        if not content:
-            continue
-
-        # ----------------------------------------------------
-        # Normal text
-        # ----------------------------------------------------
-
-        if element_type == "text":
-
-            parts.append(content)
-
-        # ----------------------------------------------------
-        # Image
-        # ----------------------------------------------------
-
-        elif element_type == "image":
-
-            parts.append(
-                "[IMAGE]\n"
-                + content
-            )
-
-        # ----------------------------------------------------
-        # Table
-        # ----------------------------------------------------
-
-        elif element_type == "table":
-
-            parts.append(
-                "[TABLE]\n"
-                + content
-            )
-
-    return "\n\n".join(parts)
+        "mime_type": None,
+    }
 
 
 # ============================================================
-# SPLIT LARGE SECTION INTO PARAGRAPHS
+# CREATE VISUAL CHUNK
 # ============================================================
 
-def split_paragraphs(section):
+def create_visual_chunk(
+    element,
+    section,
+    chunk_index
+):
 
-    paragraphs = []
+    visual_type = element["type"]
 
-    for element in section["elements"]:
+    return {
 
-        content = element["content"]
+        "chunk_id": str(uuid.uuid4()),
 
-        if not content:
-            continue
+        # image OR table
+        "chunk_type": visual_type,
 
-        # ----------------------------------------------------
-        # Image
-        # ----------------------------------------------------
+        # IMPORTANT:
+        # This will contain the vision-model description.
+        # It is used for embedding/retrieval.
+        "content": element.get("text", ""),
 
-        if element["type"] == "image":
+        "token_count": estimate_tokens(
+            element.get("text", "")
+        ),
 
-            paragraphs.append({
-                "type": "image",
-                "content": (
-                    "[IMAGE]\n"
-                    + content
-                ),
-            })
+        "section_id": section["section_id"],
 
-        # ----------------------------------------------------
-        # Table
-        # ----------------------------------------------------
+        "section_title": section["section_title"],
 
-        elif element["type"] == "table":
+        "section_path": section["section_path"],
 
-            paragraphs.append({
-                "type": "table",
-                "content": (
-                    "[TABLE]\n"
-                    + content
-                ),
-            })
+        "chunk_index": chunk_index,
 
-        # ----------------------------------------------------
-        # Text
-        # ----------------------------------------------------
+        # ====================================================
+        # ACTUAL VISUAL
+        # ====================================================
 
-        else:
+        "image_base64": element.get(
+            "image_base64"
+        ),
 
-            text_parts = re.split(
-                r"\n\s*\n",
-                content
-            )
-
-            for text in text_parts:
-
-                text = text.strip()
-
-                if text:
-
-                    paragraphs.append({
-                        "type": "text",
-                        "content": text,
-                    })
-
-    return paragraphs
+        "mime_type": element.get(
+            "mime_type"
+        ),
+    }
 
 
 # ============================================================
@@ -178,19 +140,16 @@ def split_paragraphs(section):
 
 def semantic_chunk_sentences(
     sentences,
+    section,
     embedding_model,
-    target_tokens=400,
-    max_tokens=500,
-    threshold=0.65,
-    overlap_sentences=1,
+    starting_chunk_index=0,
 ):
 
     if not sentences:
-
         return []
 
     # --------------------------------------------------------
-    # Generate embeddings for all sentences
+    # Generate embeddings
     # --------------------------------------------------------
 
     embeddings = embedding_model.encode(
@@ -200,18 +159,13 @@ def semantic_chunk_sentences(
     chunks = []
 
     current_sentences = []
-
     current_tokens = 0
 
-    # ========================================================
-    # Iterate through sentences
-    # ========================================================
+    chunk_index = starting_chunk_index
 
     for i, sentence in enumerate(sentences):
 
-        sentence_tokens = estimate_tokens(
-            sentence
-        )
+        sentence_tokens = estimate_tokens(sentence)
 
         # ----------------------------------------------------
         # First sentence
@@ -219,97 +173,106 @@ def semantic_chunk_sentences(
 
         if not current_sentences:
 
-            current_sentences.append(
-                sentence
-            )
-
+            current_sentences.append(sentence)
             current_tokens = sentence_tokens
 
             continue
 
         # ----------------------------------------------------
-        # Similarity with previous sentence
+        # Semantic similarity
         # ----------------------------------------------------
+
+        previous_embedding = embeddings[i - 1]
+        current_embedding = embeddings[i]
 
         similarity = float(
-            embeddings[i - 1]
-            @
-            embeddings[i]
+            np.dot(
+                previous_embedding,
+                current_embedding
+            )
         )
 
-        # ----------------------------------------------------
-        # Decide whether to create boundary
-        # ----------------------------------------------------
-
         semantic_boundary = (
-            similarity < threshold
+            similarity <
+            SEMANTIC_SIMILARITY_THRESHOLD
         )
 
         size_boundary = (
-            current_tokens
-            + sentence_tokens
-            > max_tokens
+            current_tokens >=
+            TARGET_CHUNK_TOKENS
         )
 
-        target_reached = (
-            current_tokens
-            >= target_tokens
+        max_boundary = (
+            current_tokens + sentence_tokens
+            > MAX_CHUNK_TOKENS
         )
 
         # ----------------------------------------------------
-        # Create new chunk
+        # Create boundary
         # ----------------------------------------------------
 
         if (
-            (semantic_boundary and target_reached)
-            or size_boundary
+            max_boundary
+            or
+            (
+                semantic_boundary
+                and size_boundary
+            )
         ):
 
+            chunk_text = " ".join(
+                current_sentences
+            )
+
             chunks.append(
-                " ".join(current_sentences)
+                create_text_chunk(
+                    chunk_text,
+                    section,
+                    chunk_index
+                )
             )
 
+            chunk_index += 1
+
             # ------------------------------------------------
-            # Overlap previous sentences
+            # Sentence overlap
             # ------------------------------------------------
 
-            if overlap_sentences > 0:
+            overlap = current_sentences[
+                -CHUNK_OVERLAP_SENTENCES:
+            ]
 
-                overlap = current_sentences[
-                    -overlap_sentences:
-                ]
-
-            else:
-
-                overlap = []
-
-            current_sentences = (
-                overlap.copy()
-            )
+            current_sentences = overlap.copy()
 
             current_tokens = sum(
-                estimate_tokens(sentence)
-                for sentence in current_sentences
+                estimate_tokens(s)
+                for s in current_sentences
             )
 
         # ----------------------------------------------------
         # Add current sentence
         # ----------------------------------------------------
 
-        current_sentences.append(
-            sentence
-        )
+        current_sentences.append(sentence)
 
         current_tokens += sentence_tokens
 
     # ========================================================
-    # Final chunk
+    # FINAL CHUNK
     # ========================================================
 
     if current_sentences:
 
+        chunk_text = " ".join(
+            current_sentences
+        )
+
         chunks.append(
-            " ".join(current_sentences)
+            create_text_chunk(
+                chunk_text,
+                section,
+                chunk_index
+            )
         )
 
     return chunks
@@ -321,108 +284,82 @@ def semantic_chunk_sentences(
 
 def process_large_section(
     section,
-    embedding_model,
-    target_tokens,
-    max_tokens,
-    threshold,
-    overlap_sentences,
+    embedding_model
 ):
-
-    paragraphs = split_paragraphs(
-        section
-    )
 
     final_chunks = []
 
-    current_sentences = []
+    text_buffer = []
+
+    chunk_index = 0
+
+    def flush_text():
+
+        nonlocal chunk_index
+
+        if not text_buffer:
+            return
+
+        text = " ".join(text_buffer)
+
+        sentences = split_sentences(text)
+
+        new_chunks = semantic_chunk_sentences(
+            sentences,
+            section,
+            embedding_model,
+            starting_chunk_index=chunk_index,
+        )
+
+        final_chunks.extend(new_chunks)
+
+        chunk_index += len(new_chunks)
+
+        text_buffer.clear()
 
     # ========================================================
-    # Process paragraph by paragraph
+    # PROCESS ELEMENTS IN ORIGINAL PDF ORDER
     # ========================================================
 
-    for paragraph in paragraphs:
+    for element in section["elements"]:
 
-        paragraph_type = paragraph["type"]
-
-        content = paragraph["content"]
-
-        # ----------------------------------------------------
-        # IMAGE / TABLE
-        #
-        # Keep them at their original position.
-        # ----------------------------------------------------
-
-        if paragraph_type in [
-            "image",
-            "table"
-        ]:
-
-            # Process accumulated text first.
-            if current_sentences:
-
-                text_chunks = (
-                    semantic_chunk_sentences(
-                        current_sentences,
-                        embedding_model,
-                        target_tokens,
-                        max_tokens,
-                        threshold,
-                        overlap_sentences,
-                    )
-                )
-
-                for chunk in text_chunks:
-
-                    final_chunks.append({
-                        "chunk_type": "text",
-                        "content": chunk,
-                    })
-
-                current_sentences = []
-
-            # Add image/table exactly here.
-            final_chunks.append({
-                "chunk_type": paragraph_type,
-                "content": content,
-            })
+        element_type = element["type"]
 
         # ----------------------------------------------------
         # TEXT
         # ----------------------------------------------------
 
-        else:
+        if element_type == "text":
 
-            sentences = split_sentences(
-                content
+            text = element.get("text", "").strip()
+
+            if text:
+                text_buffer.append(text)
+
+        # ----------------------------------------------------
+        # IMAGE / TABLE
+        # ----------------------------------------------------
+
+        elif element_type in ["image", "table"]:
+
+            # Finish text before visual
+            flush_text()
+
+            # Add visual exactly where it appeared
+            visual_chunk = create_visual_chunk(
+                element,
+                section,
+                chunk_index
             )
 
-            current_sentences.extend(
-                sentences
+            final_chunks.append(
+                visual_chunk
             )
 
-    # ========================================================
-    # Process remaining text
-    # ========================================================
+            chunk_index += 1
 
-    if current_sentences:
-
-        text_chunks = (
-            semantic_chunk_sentences(
-                current_sentences,
-                embedding_model,
-                target_tokens,
-                max_tokens,
-                threshold,
-                overlap_sentences,
-            )
-        )
-
-        for chunk in text_chunks:
-
-            final_chunks.append({
-                "chunk_type": "text",
-                "content": chunk,
-            })
+    # Flush remaining text
+    flush_text()
 
     return final_chunks
 
@@ -433,203 +370,133 @@ def process_large_section(
 
 def build_chunks(
     sections,
-    embedding_model,
-    small_section_tokens=800,
-    target_chunk_tokens=400,
-    max_chunk_tokens=500,
-    similarity_threshold=0.65,
-    overlap_sentences=1,
+    embedding_model
 ):
 
     print("\n========== BUILDING CHUNKS ==========")
 
     all_chunks = []
 
-    # ========================================================
-    # Process each section
-    # ========================================================
-
     for section in sections:
 
-        section_text = section_to_text(
-            section
-        )
+        section_text = []
 
-        section_tokens = estimate_tokens(
+        for element in section["elements"]:
+
+            if element["type"] == "text":
+
+                section_text.append(
+                    element.get("text", "")
+                )
+
+            elif element["type"] in [
+                "image",
+                "table"
+            ]:
+
+                # Vision description
+                section_text.append(
+                    element.get("text", "")
+                )
+
+        combined_text = " ".join(
             section_text
         )
 
-        print(
-            f"\nSection: "
-            f"{section['section_title']}"
-        )
-
-        print(
-            f"Estimated tokens: "
-            f"{section_tokens}"
+        estimated_tokens = estimate_tokens(
+            combined_text
         )
 
         # ====================================================
         # SMALL SECTION
         # ====================================================
 
-        if section_tokens <= small_section_tokens:
+        if estimated_tokens <= SMALL_SECTION_TOKENS:
 
-            print(
-                "→ Small section: keeping intact"
+            # Even small sections must preserve
+            # image/table positions.
+
+            chunks = process_large_section(
+                section,
+                embedding_model
             )
-
-            if section_text:
-
-                all_chunks.append({
-                    "chunk_id": str(uuid.uuid4()),
-
-                    "section_id":
-                        section["section_id"],
-
-                    "section_index":
-                        section["section_index"],
-
-                    "section_title":
-                        section["section_title"],
-
-                    "section_path":
-                        section["section_path"],
-
-                    "chunk_index": 0,
-
-                    "chunk_type": "section",
-
-                    "content": section_text,
-
-                    "token_count":
-                        estimate_tokens(
-                            section_text
-                        ),
-                })
-
-            continue
 
         # ====================================================
         # LARGE SECTION
         # ====================================================
 
-        print(
-            "→ Large section: semantic chunking"
-        )
+        else:
 
-        section_chunks = (
-            process_large_section(
+            chunks = process_large_section(
                 section,
-                embedding_model,
-                target_chunk_tokens,
-                max_chunk_tokens,
-                similarity_threshold,
-                overlap_sentences,
+                embedding_model
             )
-        )
 
-        # ====================================================
-        # Add metadata
-        # ====================================================
-
-        for chunk_index, chunk in enumerate(
-            section_chunks
-        ):
-
-            content = chunk["content"]
-
-            all_chunks.append({
-                "chunk_id": str(uuid.uuid4()),
-
-                "section_id":
-                    section["section_id"],
-
-                "section_index":
-                    section["section_index"],
-
-                "section_title":
-                    section["section_title"],
-
-                "section_path":
-                    section["section_path"],
-
-                "chunk_index":
-                    chunk_index,
-
-                "chunk_type":
-                    chunk["chunk_type"],
-
-                "content":
-                    content,
-
-                "token_count":
-                    estimate_tokens(
-                        content
-                    ),
-            })
-
-    print(
-        f"\nTotal chunks created: "
-        f"{len(all_chunks)}"
-    )
+        all_chunks.extend(chunks)
 
     return all_chunks
 
 
 # ============================================================
-# DISPLAY CHUNKS
+# PRINT CHUNKS
 # ============================================================
 
 def print_chunks(chunks):
 
-    print(
-        "\n"
-        + "=" * 80
-    )
-
-    print(
-        "FINAL CHUNKS"
-    )
-
-    print(
-        "=" * 80
-    )
+    print("\n========== CHUNKS ==========")
 
     for i, chunk in enumerate(chunks):
 
+        print("\n--------------------------------")
+
         print(
-            f"\nCHUNK {i + 1}"
+            f"Chunk {i}"
         )
 
         print(
-            "-" * 80
+            f"ID: {chunk['chunk_id']}"
         )
 
         print(
-            f"Chunk ID     : "
-            f"{chunk['chunk_id']}"
+            f"Type: {chunk['chunk_type']}"
         )
 
         print(
-            f"Section      : "
-            f"{chunk['section_title']}"
+            f"Section: {chunk['section_title']}"
         )
 
         print(
-            f"Chunk Type   : "
-            f"{chunk['chunk_type']}"
+            f"Path: "
+            f"{' > '.join(chunk['section_path'])}"
         )
 
         print(
-            f"Tokens       : "
-            f"{chunk['token_count']}"
+            f"Tokens: {chunk['token_count']}"
         )
 
-        print(
-            "\nContent:"
-        )
+        # Don't print the huge base64 string
+        if chunk["chunk_type"] in [
+            "image",
+            "table"
+        ]:
 
-        print(
-            chunk["content"]
-        )
+            print(
+                "Actual visual: "
+                + (
+                    "AVAILABLE"
+                    if chunk.get("image_base64")
+                    else "NOT AVAILABLE"
+                )
+            )
+
+            print(
+                f"Description:\n"
+                f"{chunk['content'][:500]}"
+            )
+
+        else:
+
+            print(
+                f"Content:\n"
+                f"{chunk['content'][:500]}"
+            )

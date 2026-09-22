@@ -1,47 +1,147 @@
 import re
-import uuid
-
 from unstructured.partition.pdf import partition_pdf
 
 
 # ============================================================
-# TEXT CLEANING
+# HEADING VALIDATION
 # ============================================================
 
-def clean_text(text):
+def is_valid_heading(text):
 
     if not text:
-        return ""
+        return False
 
-    # Remove excessive spaces
-    text = re.sub(
-        r"[ \t]+",
-        " ",
-        text
+    text = text.strip()
+
+    if len(text) < 3:
+        return False
+
+    if len(text) > 150:
+        return False
+
+    lower = text.lower()
+
+    # Table / experiment labels
+    # Example: (A) base, (E) big
+    if re.match(r"^\([A-Z]\)", text):
+        return False
+
+    # Bibliography-like fragments
+    suspicious_phrases = [
+        "arxiv preprint",
+        "proceedings of",
+        "in advances in",
+        "conference on",
+    ]
+
+    if any(
+        phrase in lower
+        for phrase in suspicious_phrases
+    ):
+        return False
+
+    # Mathematical / parameter fragments
+    suspicious_terms = [
+        "dmodel",
+        "d_k",
+        "dk",
+        "d_v",
+        "dv",
+        "sin",
+        "cos",
+        "log",
+    ]
+
+    compact = lower.replace(" ", "")
+
+    if any(
+        term in compact
+        for term in suspicious_terms
+    ):
+        return False
+
+    # Must contain actual alphabetic content
+    if not re.search(r"[A-Za-z]{2,}", text):
+        return False
+
+    return True
+
+
+# ============================================================
+# RAW UNSTRUCTURED ELEMENT TYPE
+# ============================================================
+
+def get_raw_element_type(element):
+
+    category = getattr(
+        element,
+        "category",
+        ""
+    ).lower()
+
+    if category == "title":
+        return "title"
+
+    if category == "image":
+        return "image"
+
+    if category == "table":
+        return "table"
+
+    return "text"
+
+
+# ============================================================
+# GET IMAGE/TABLE PAYLOAD
+# ============================================================
+
+def get_visual_data(element):
+
+    metadata = getattr(
+        element,
+        "metadata",
+        None
     )
 
-    # Remove excessive newlines
-    text = re.sub(
-        r"\n{3,}",
-        "\n\n",
-        text
+    if metadata is None:
+        return None
+
+    if hasattr(metadata, "to_dict"):
+        metadata = metadata.to_dict()
+
+    if not isinstance(metadata, dict):
+        return None
+
+    image_base64 = metadata.get(
+        "image_base64"
     )
 
-    return text.strip()
+    if not image_base64:
+        return None
+
+    return {
+        "image_base64": image_base64,
+
+        "mime_type": metadata.get(
+            "image_mime_type",
+            "image/jpeg"
+        ),
+    }
 
 
 # ============================================================
 # EXTRACT PDF
 # ============================================================
 
-def extract_pdf(pdf_path, vision_model=None):
+import time
 
-    print("\n========== PDF EXTRACTION ==========")
+
+def extract_pdf(pdf_path, vision_model):
 
     elements = partition_pdf(
         filename=pdf_path,
 
-        strategy="fast",
+        strategy="hi_res",
 
         infer_table_structure=True,
 
@@ -55,276 +155,369 @@ def extract_pdf(pdf_path, vision_model=None):
         chunking_strategy=None,
     )
 
-    print(
-        f"Extracted {len(elements)} PDF elements."
-    )
+    # ========================================================
+    # Convert Unstructured objects → our dictionaries
+    # ========================================================
 
     processed_elements = []
 
-    for index, element in enumerate(elements):
+    for element in elements:
 
-        element_type = type(element).__name__
+        element_type = get_raw_element_type(
+            element
+        )
 
-        # ====================================================
-        # TITLE
-        # ====================================================
-
-        if element_type == "Title":
-
-            text = clean_text(
-                str(element)
-            )
-
-            if text:
-
-                processed_elements.append({
-                    "element_id": str(uuid.uuid4()),
-                    "type": "title",
-                    "content": text,
-                    "original_index": index,
-                    "metadata": {},
-                })
-
-        # ====================================================
-        # TEXT
-        # ====================================================
-
-        elif element_type in [
-            "NarrativeText",
-            "Text",
-            "ListItem"
-        ]:
-
-            text = clean_text(
-                str(element)
-            )
-
-            if text:
-
-                processed_elements.append({
-                    "element_id": str(uuid.uuid4()),
-                    "type": "text",
-                    "content": text,
-                    "original_index": index,
-                    "metadata": {},
-                })
+        text = str(element).strip()
 
         # ====================================================
         # IMAGE / TABLE
         # ====================================================
 
-        elif element_type in [
-            "Image",
-            "Table"
+        if element_type in [
+            "image",
+            "table"
         ]:
 
-            image_base64 = None
-
-            metadata = getattr(
-                element,
-                "metadata",
-                None
+            visual_data = get_visual_data(
+                element
             )
 
-            if metadata:
-
-                image_base64 = getattr(
-                    metadata,
-                    "image_base64",
-                    None
-                )
-
-            # ------------------------------------------------
-            # If there is no image payload
-            # ------------------------------------------------
-
-            if not image_base64:
+            if visual_data:
 
                 print(
-                    f"[WARNING] No image payload "
-                    f"for {element_type}"
+                    f"[VISION] Processing "
+                    f"{element_type}..."
                 )
 
-                continue
+                # =================================================
+                # GEMINI RETRY
+                # =================================================
 
-            # ------------------------------------------------
-            # Vision API
-            # ------------------------------------------------
+                description = None
 
-            description = ""
+                for attempt in range(3):
 
-            if vision_model:
+                    try:
 
-                visual_type = (
-                    "table"
-                    if element_type == "Table"
-                    else "image"
-                )
+                        description = vision_model.describe(
+                            visual_data["image_base64"],
+                            visual_type=element_type
+                        )
 
-                try:
+                        # Success
+                        break
+
+                    except Exception as e:
+
+                        print(
+                            f"[VISION] Attempt "
+                            f"{attempt + 1}/3 failed: {e}"
+                        )
+
+                        if attempt < 2:
+
+                            wait_time = 2 ** attempt
+
+                            print(
+                                f"[VISION] Retrying "
+                                f"in {wait_time} seconds..."
+                            )
+
+                            time.sleep(wait_time)
+
+                # =================================================
+                # FALLBACK
+                # =================================================
+
+                if description is None:
 
                     print(
-                        f"Vision API processing "
-                        f"{element_type}..."
-                    )
-
-                    description = vision_model.describe(
-                        image_base64,
-                        visual_type
-                    )
-
-                except Exception as e:
-
-                    print(
-                        f"[ERROR] Vision API failed: {e}"
+                        f"[VISION] Failed to describe "
+                        f"{element_type} after 3 attempts."
                     )
 
                     description = (
-                        f"[Vision processing failed for "
-                        f"{visual_type}]"
+                        f"{element_type.capitalize()} "
+                        "from the PDF. "
+                        "Vision description unavailable."
                     )
 
-            # ------------------------------------------------
-            # Store in original position
-            # ------------------------------------------------
+                # =================================================
+                # KEEP BOTH:
+                #
+                # 1. Vision description → retrieval
+                # 2. Actual image/table → output
+                # =================================================
 
-            processed_elements.append({
-                "element_id": str(uuid.uuid4()),
-                "type": (
-                    "table"
-                    if element_type == "Table"
-                    else "image"
-                ),
-                "content": description,
-                "original_index": index,
-                "metadata": {
-                    "image_base64": image_base64,
-                },
-            })
+                processed_elements.append({
+
+                    "type": element_type,
+
+                    # Used for embedding/search
+                    "text": description,
+
+                    # ACTUAL IMAGE/TABLE
+                    "image_base64":
+                        visual_data["image_base64"],
+
+                    "mime_type":
+                        visual_data["mime_type"],
+                })
+
+            else:
+
+                print(
+                    f"[WARNING] {element_type} "
+                    f"has no image payload."
+                )
+
+                processed_elements.append({
+
+                    "type": element_type,
+
+                    "text": "",
+
+                    "image_base64": None,
+
+                    "mime_type": None,
+                })
+
+            continue
+
+        # ====================================================
+        # TITLE / TEXT
+        # ====================================================
+
+        processed_elements.append({
+
+            "type": element_type,
+
+            "text": text,
+
+            "image_base64": None,
+
+            "mime_type": None,
+        })
 
     # ========================================================
-    # Sort by original PDF order
+    # RETURN
     # ========================================================
-
-    processed_elements.sort(
-        key=lambda x: x["original_index"]
-    )
-
-    print(
-        f"Processed {len(processed_elements)} elements."
-    )
 
     return processed_elements
 
 
 # ============================================================
-# BUILD SECTION STRUCTURE
+# BUILD SECTIONS
 # ============================================================
 
 def build_sections(elements):
 
-    print("\n========== BUILDING SECTIONS ==========")
+    print(
+        "\n========== BUILDING SECTIONS =========="
+    )
 
     sections = []
 
-    current_section = None
+    current_section_title = (
+        "Document Introduction"
+    )
 
-    section_counter = 0
+    current_section_elements = []
+
+    section_stack = []
+
+    def flush_section():
+
+        nonlocal current_section_elements
+
+        if not current_section_elements:
+            return
+
+        sections.append({
+
+            "section_id":
+                f"section_{len(sections)}",
+
+            "section_title":
+                current_section_title,
+
+            "section_path":
+                section_stack.copy(),
+
+            "elements":
+                current_section_elements.copy(),
+        })
+
+        current_section_elements = []
+
+    # ========================================================
+    # PROCESS OUR DICTIONARIES
+    # ========================================================
 
     for element in elements:
 
+        element_type = element["type"]
+
+        text = element.get(
+            "text",
+            ""
+        ).strip()
+
         # ====================================================
-        # NEW SECTION
+        # TITLE
         # ====================================================
 
-        if element["type"] == "title":
+        if element_type == "title":
 
-            # Save previous section
-            if current_section:
+            # -----------------------------------------------
+            # Genuine heading
+            # -----------------------------------------------
 
-                sections.append(
-                    current_section
+            if is_valid_heading(text):
+
+                print(
+                    f"[SECTION] {text}"
                 )
 
-            section_counter += 1
+                flush_section()
 
-            current_section = {
-                "section_id": str(uuid.uuid4()),
+                current_section_title = text
 
-                "section_index": section_counter,
+                # -------------------------------------------
+                # Hierarchy
+                # -------------------------------------------
 
-                "section_title":
-                    element["content"],
+                level_match = re.match(
+                    r"^(\d+(?:\.\d+)*)\s+",
+                    text
+                )
 
-                "section_path": [
-                    element["content"]
-                ],
+                if level_match:
 
-                "elements": [],
-            }
+                    section_number = (
+                        level_match.group(1)
+                    )
 
-        # ====================================================
-        # CONTENT BEFORE FIRST TITLE
-        # ====================================================
+                    level = (
+                        section_number.count(".")
+                        + 1
+                    )
 
-        else:
+                    section_stack = (
+                        section_stack[:level - 1]
+                    )
 
-            if current_section is None:
+                    section_stack.append(
+                        text
+                    )
 
-                current_section = {
-                    "section_id": str(uuid.uuid4()),
+                else:
 
-                    "section_index": 0,
+                    section_stack = [
+                        text
+                    ]
 
-                    "section_title":
-                        "Document Introduction",
+                continue
 
-                    "section_path": [
-                        "Document Introduction"
-                    ],
+            # -----------------------------------------------
+            # False title
+            # -----------------------------------------------
 
-                    "elements": [],
-                }
-
-            current_section["elements"].append(
-                element
+            print(
+                f"[FALSE TITLE] {text} "
+                f"→ treating as text"
             )
 
+            element_type = "text"
+
+        # ====================================================
+        # IMAGE / TABLE
+        # ====================================================
+
+        if element_type in [
+            "image",
+            "table"
+        ]:
+
+            current_section_elements.append({
+
+                "type": element_type,
+
+                # Vision description
+                "text": text,
+
+                # Actual image/table
+                "image_base64":
+                    element.get(
+                        "image_base64"
+                    ),
+
+                "mime_type":
+                    element.get(
+                        "mime_type"
+                    ),
+            })
+
+            continue
+
+        # ====================================================
+        # TEXT
+        # ====================================================
+
+        current_section_elements.append({
+
+            "type": "text",
+
+            "text": text,
+
+            "image_base64": None,
+
+            "mime_type": None,
+        })
+
     # ========================================================
-    # Save final section
+    # FINAL SECTION
     # ========================================================
 
-    if current_section:
-
-        sections.append(
-            current_section
-        )
-
-    print(
-        f"Created {len(sections)} sections."
-    )
+    flush_section()
 
     return sections
 
 
 # ============================================================
-# DISPLAY SECTION STRUCTURE
+# PRINT SECTIONS
 # ============================================================
 
-def print_sections(sections):
+"""def print_sections(sections):
 
-    print("\n========== SECTION STRUCTURE ==========")
+    print(
+        "\n========== SECTION STRUCTURE =========="
+    )
 
     for section in sections:
 
+        print("\n--------------------------------------")
+
         print(
-            f"\nSECTION "
-            f"{section['section_index']}: "
+            f"Section: "
             f"{section['section_title']}"
+        )
+
+        print(
+            "Path: "
+            + " > ".join(
+                section["section_path"]
+            )
+        )
+
+        print(
+            f"Elements: "
+            f"{len(section['elements'])}"
         )
 
         for element in section["elements"]:
 
             print(
-                f"  └── {element['type'].upper()}"
-            )
+                f"  [{element['type']}] "
+                f"{element.get('text', '')[:100]}"
+            )"""
