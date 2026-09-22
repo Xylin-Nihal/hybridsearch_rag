@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 rag_env/
 data/
+extracted_images/
