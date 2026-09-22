@@ -1,17 +1,80 @@
-from pathlib import Path
+import os
+from dotenv import load_dotenv
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv()
 
-PDF_PATH = BASE_DIR / "data" / "attention-is-all-you-need.pdf"
 
-IMAGE_DIR = BASE_DIR / "extracted_images"
-VECTOR_DIR = BASE_DIR / "vectorstore"
+# ============================================================
+# PDF CONFIGURATION
+# ============================================================
 
-IMAGE_DIR.mkdir(exist_ok=True)
-VECTOR_DIR.mkdir(exist_ok=True)
+PDF_PATH = "data/attention-is-all-you-need.pdf"
 
-EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 
-TOP_K = 5
-NEIGHBOR_WINDOW = 1
-FIXED_OVERLAP = 50
+# ============================================================
+# CHUNKING CONFIGURATION
+# ============================================================
+
+SMALL_SECTION_TOKENS = 800
+
+TARGET_CHUNK_TOKENS = 400
+
+MAX_CHUNK_TOKENS = 500
+
+SEMANTIC_SIMILARITY_THRESHOLD = 0.65
+
+CHUNK_OVERLAP_SENTENCES = 1
+
+
+# ============================================================
+# HUGGING FACE EMBEDDING CONFIGURATION
+# ============================================================
+
+HF_TOKEN = os.getenv("HF_TOKEN")
+
+EMBEDDING_MODEL = os.getenv(
+    "EMBEDDING_MODEL",
+    "BAAI/bge-small-en-v1.5"
+)
+
+
+# ============================================================
+# GEMINI VISION CONFIGURATION
+# ============================================================
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+VISION_MODEL = os.getenv(
+    "VISION_MODEL",
+    "gemini-2.5-flash"
+)
+
+
+# ============================================================
+# VALIDATE CONFIGURATION
+# ============================================================
+
+def validate_config():
+
+    required_variables = {
+        "HF_TOKEN": HF_TOKEN,
+        "GEMINI_API_KEY": GEMINI_API_KEY,
+        "EMBEDDING_MODEL": EMBEDDING_MODEL,
+        "VISION_MODEL": VISION_MODEL,
+    }
+
+    missing = [
+        name
+        for name, value in required_variables.items()
+        if not value
+    ]
+
+    if missing:
+
+        raise RuntimeError(
+            "Missing environment variables:\n"
+            + "\n".join(
+                f"- {name}"
+                for name in missing
+            )
+        )

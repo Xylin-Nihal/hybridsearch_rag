@@ -1,4 +1,6 @@
 .env
-extracted_images/
+__pycache__/
+*.pyc
+.venv/
 rag_env/
-vectorstore/
+data/
