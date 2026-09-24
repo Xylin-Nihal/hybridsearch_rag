@@ -133,7 +133,7 @@ def main():
         if not query:
             continue
 
-        results = vector_store.search(
+        results = vector_store.hybrid_search(
             query,
             embedding_model,
             top_k=5
@@ -143,36 +143,63 @@ def main():
             "\n========== SEARCH RESULTS =========="
         )
 
-        for rank, result in enumerate(
-            results,
-            start=1
-        ):
+        print("\n" + "=" * 80)
+        print("VECTOR SEARCH - TOP 5")
+        print("=" * 80)
+
+        for result in results["vector"]:
 
             chunk = result["chunk"]
 
             print(
-                f"\nRESULT {rank}"
-            )
-
-            print("-" * 80)
-
-            print(
-                f"Similarity : "
-                f"{result['score']:.4f}"
+                f"\nRank: {result['rank']}"
             )
 
             print(
-                f"Section    : "
-                f"{chunk['section_title']}"
+                f"Score: {result['score']:.4f}"
             )
 
             print(
-                f"Type       : "
-                f"{chunk['chunk_type']}"
+                f"Type: {chunk['chunk_type']}"
             )
 
             print(
-                f"\n{chunk['content']}"
+                f"Section: {chunk['section_title']}"
+            )
+
+            print(
+                f"Content: "
+                f"{chunk['content'][:500]}"
+            )
+
+
+        print("\n" + "=" * 80)
+        print("BM25 SEARCH - TOP 5")
+        print("=" * 80)
+
+        for result in results["bm25"]:
+
+            chunk = result["chunk"]
+
+            print(
+                f"\nRank: {result['rank']}"
+            )
+
+            print(
+                f"Score: {result['score']:.4f}"
+            )
+
+            print(
+                f"Type: {chunk['chunk_type']}"
+            )
+
+            print(
+                f"Section: {chunk['section_title']}"
+            )
+
+            print(
+                f"Content: "
+                f"{chunk['content'][:500]}"
             )
 
 
