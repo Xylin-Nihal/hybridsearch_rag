@@ -21,7 +21,7 @@ TARGET_CHUNK_TOKENS = 400
 
 MAX_CHUNK_TOKENS = 500
 
-SEMANTIC_SIMILARITY_THRESHOLD = 0.65
+SEMANTIC_SIMILARITY_THRESHOLD = 0.75
 
 CHUNK_OVERLAP_SENTENCES = 1
 
@@ -53,6 +53,10 @@ VISION_MODEL = os.getenv(
 # ============================================================
 # VALIDATE CONFIGURATION
 # ============================================================
+RERANKER_MODEL = os.getenv(
+    "RERANKER_MODEL",
+    "cross-encoder/ms-marco-MiniLM-L6-v2"
+)
 
 def validate_config():
 
@@ -61,6 +65,7 @@ def validate_config():
         "GEMINI_API_KEY": GEMINI_API_KEY,
         "EMBEDDING_MODEL": EMBEDDING_MODEL,
         "VISION_MODEL": VISION_MODEL,
+        "RERANKER_MODEL": RERANKER_MODEL    
     }
 
     missing = [

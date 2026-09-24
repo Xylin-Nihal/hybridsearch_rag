@@ -11,6 +11,7 @@ from src.config import (
 from src.models import (
     EmbeddingModel,
     VisionModel,
+    RerankerModel
 )
 
 from src.pdf_processor import (
@@ -50,6 +51,8 @@ def main():
     embedding_model = EmbeddingModel()
 
     vision_model = VisionModel()
+
+    reranker_model = RerankerModel()
 
     print("API clients initialized.")
 
@@ -133,73 +136,75 @@ def main():
         if not query:
             continue
 
-        results = vector_store.hybrid_search(
-            query,
-            embedding_model,
-            top_k=5
+        results = vector_store.search_with_reranker(
+            query=query,
+            embedding_model=embedding_model,
+            reranker_model=reranker_model,
+            retrieval_top_k=5,
+            final_top_k=5
         )
 
         print(
-            "\n========== SEARCH RESULTS =========="
+            "\n\n=================================================="
         )
 
-        print("\n" + "=" * 80)
-        print("VECTOR SEARCH - TOP 5")
-        print("=" * 80)
+        print(
+            "FINAL RERANKED RESULTS"
+        )
 
-        for result in results["vector"]:
-
-            chunk = result["chunk"]
-
-            print(
-                f"\nRank: {result['rank']}"
-            )
-
-            print(
-                f"Score: {result['score']:.4f}"
-            )
-
-            print(
-                f"Type: {chunk['chunk_type']}"
-            )
-
-            print(
-                f"Section: {chunk['section_title']}"
-            )
-
-            print(
-                f"Content: "
-                f"{chunk['content'][:500]}"
-            )
+        print(
+            "=================================================="
+        )
 
 
-        print("\n" + "=" * 80)
-        print("BM25 SEARCH - TOP 5")
-        print("=" * 80)
-
-        for result in results["bm25"]:
+        for rank, result in enumerate(
+            results["reranked"],
+            start=1
+        ):
 
             chunk = result["chunk"]
 
             print(
-                f"\nRank: {result['rank']}"
+                f"\n{'=' * 60}"
             )
 
             print(
-                f"Score: {result['score']:.4f}"
+                f"FINAL RANK: {rank}"
             )
 
             print(
-                f"Type: {chunk['chunk_type']}"
+                f"RERANK SCORE: "
+                f"{result['rerank_score']:.4f}"
             )
 
             print(
-                f"Section: {chunk['section_title']}"
+                f"SECTION: "
+                f"{chunk.get('section_title')}"
             )
 
             print(
-                f"Content: "
-                f"{chunk['content'][:500]}"
+                f"PATH: "
+                f"{' > '.join(chunk.get('section_path', []))}"
+            )
+
+            print(
+                f"TYPE: "
+                f"{chunk.get('chunk_type')}"
+            )
+
+            print(
+                f"RETRIEVED BY: "
+                f"{', '.join(result['retrieval_sources'])}"
+            )
+
+            print(
+                f"ACTUAL VISUAL: "
+                f"{'YES' if chunk.get('image_base64') else 'NO'}"
+            )
+
+            print(
+                f"\nCONTENT:\n"
+                f"{chunk.get('content', '')}"
             )
 
 

@@ -1,10 +1,10 @@
 import base64
 import numpy as np
-
+import torch
 from huggingface_hub import InferenceClient
 from google import genai
 from google.genai import types
-
+from sentence_transformers import CrossEncoder
 from src.config import (
     HF_TOKEN,
     EMBEDDING_MODEL,
@@ -249,3 +249,116 @@ Do not invent information that is not visible.
             )
 
         return response.text.strip()
+class RerankerModel:
+
+    def __init__(self):
+
+        from src.config import RERANKER_MODEL
+
+        self.model_name = RERANKER_MODEL
+
+        device = (
+            "cuda"
+            if torch.cuda.is_available()
+            else "cpu"
+        )
+
+        print(
+            f"Loading reranker: "
+            f"{self.model_name}"
+        )
+
+        print(
+            f"Reranker device: {device}"
+        )
+
+        self.model = CrossEncoder(
+            self.model_name,
+            max_length=512,
+            device=device
+        )
+
+        print(
+            "Reranker initialized."
+        )
+
+    def rerank(
+        self,
+        query,
+        candidates,
+        top_k=5
+    ):
+
+        if not candidates:
+            return []
+
+        pairs = []
+
+        for candidate in candidates:
+
+            chunk = candidate["chunk"]
+
+            section_title = chunk.get(
+                "section_title",
+                ""
+            )
+
+            section_path = chunk.get(
+                "section_path",
+                []
+            )
+
+            chunk_type = chunk.get(
+                "chunk_type",
+                "text"
+            )
+
+            content = chunk.get(
+                "content",
+                ""
+            )
+
+            # Give the reranker structural
+            # information along with content.
+            document_text = (
+                f"Section: {section_title}\n"
+                f"Section path: "
+                f"{' > '.join(section_path)}\n"
+                f"Content type: {chunk_type}\n"
+                f"Content:\n{content}"
+            )
+
+            pairs.append(
+                (
+                    query,
+                    document_text
+                )
+            )
+
+        scores = self.model.predict(
+            pairs,
+            batch_size=8,
+            show_progress_bar=False
+        )
+
+        reranked = []
+
+        for candidate, score in zip(
+            candidates,
+            scores
+        ):
+
+            result = dict(candidate)
+
+            result["rerank_score"] = float(
+                score
+            )
+
+            reranked.append(result)
+
+        reranked.sort(
+            key=lambda x: x["rerank_score"],
+            reverse=True
+        )
+
+        return reranked[:top_k]
