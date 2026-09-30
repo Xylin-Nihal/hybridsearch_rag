@@ -11,7 +11,7 @@ from src.config import (
     GEMINI_API_KEY,
     VISION_MODEL,
 )
-
+from groq import Groq
 
 # ============================================================
 # EMBEDDING MODEL
@@ -362,3 +362,161 @@ class RerankerModel:
         )
 
         return reranked[:top_k]
+class GroqModel:
+
+    def __init__(self):
+
+        from src.config import (
+            GROQ_API_KEY,
+            GROQ_MODEL
+        )
+
+        if not GROQ_API_KEY:
+            raise RuntimeError(
+                "GROQ_API_KEY is not configured."
+            )
+
+        self.model_name = GROQ_MODEL
+
+        self.client = Groq(
+            api_key=GROQ_API_KEY
+        )
+
+        print(
+            f"LLM initialized: "
+            f"{self.model_name}"
+        )
+
+
+    def generate(
+        self,
+        query,
+        context,
+        history=None
+    ):
+
+        if history is None:
+            history = []
+
+
+        system_prompt = """
+You are a helpful RAG assistant.
+
+Your job is to answer the user's question
+using the retrieved document context provided
+to you.
+
+IMPORTANT RULES:
+
+1. Answer using the retrieved context whenever
+   the question is about the document.
+
+2. Do not invent facts that are not supported
+   by the retrieved context.
+
+3. If the retrieved context does not contain
+   enough information to answer the question,
+   clearly say that the information was not
+   found in the document.
+
+4. You may combine information from multiple
+   retrieved chunks when necessary.
+
+5. Prefer a clear and concise explanation.
+
+6. Preserve technical terminology from the
+   source document.
+
+7. When useful, mention the relevant section
+   name.
+
+8. The retrieved visual elements may contain
+   descriptions generated from images or tables.
+   Treat those descriptions as document evidence,
+   but do not claim to see visual details that
+   are not present in the supplied description.
+
+9. Do not mention internal retrieval mechanisms
+   such as BM25, vector search, embeddings,
+   reranking, or candidate pools unless the user
+   explicitly asks about the system.
+
+10. If the user asks a follow-up question,
+    use the conversation history together with
+    the retrieved context.
+"""
+
+
+        messages = [
+
+            {
+                "role": "system",
+                "content": system_prompt
+            }
+
+        ]
+
+
+        # ----------------------------------------------------
+        # Conversation history
+        # ----------------------------------------------------
+
+        for message in history:
+
+            messages.append({
+                "role": message["role"],
+                "content": message["content"]
+            })
+
+
+        # ----------------------------------------------------
+        # Current RAG context
+        # ----------------------------------------------------
+
+        user_prompt = f"""
+Retrieved document context:
+
+{context}
+
+
+User question:
+
+{query}
+
+
+Answer the question using the retrieved
+document context.
+"""
+
+        messages.append({
+            "role": "user",
+            "content": user_prompt
+        })
+
+
+        # ----------------------------------------------------
+        # Groq generation
+        # ----------------------------------------------------
+
+        response = self.client.chat.completions.create(
+
+            model=self.model_name,
+
+            messages=messages,
+
+            temperature=0.2,
+
+            max_tokens=2048
+
+        )
+
+
+        answer = (
+            response
+            .choices[0]
+            .message
+            .content
+        )
+
+
+        return answer.strip()

@@ -737,3 +737,58 @@ class VectorStore:
         self.bm25 = BM25Okapi(
             self.bm25_corpus
         )
+    def build_llm_context(
+        self,
+        reranked_results
+    ):
+
+        context_parts = []
+
+        for index, result in enumerate(
+            reranked_results,
+            start=1
+        ):
+
+            chunk = result["chunk"]
+
+            section_title = chunk.get(
+                "section_title",
+                ""
+            )
+
+            section_path = chunk.get(
+                "section_path",
+                []
+            )
+
+            chunk_type = chunk.get(
+                "chunk_type",
+                "text"
+            )
+
+            content = chunk.get(
+                "content",
+                ""
+            )
+
+            context_parts.append(
+                f"""
+    [SOURCE {index}]
+
+    Section:
+    {section_title}
+
+    Section path:
+    {' > '.join(section_path)}
+
+    Content type:
+    {chunk_type}
+
+    Content:
+    {content}
+    """
+            )
+
+        return "\n".join(
+            context_parts
+        )

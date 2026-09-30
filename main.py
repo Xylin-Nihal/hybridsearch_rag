@@ -1,28 +1,22 @@
 from src.config import (
     PDF_PATH,
-    SMALL_SECTION_TOKENS,
-    TARGET_CHUNK_TOKENS,
-    MAX_CHUNK_TOKENS,
-    SEMANTIC_SIMILARITY_THRESHOLD,
-    CHUNK_OVERLAP_SENTENCES,
     validate_config,
 )
 
 from src.models import (
     EmbeddingModel,
     VisionModel,
-    RerankerModel
+    RerankerModel,
+    GroqModel,
 )
 
 from src.pdf_processor import (
     extract_pdf,
     build_sections,
-    
 )
 
 from src.chunker import (
     build_chunks,
-    print_chunks,
 )
 
 from src.vector_search import (
@@ -33,8 +27,9 @@ from src.vector_search import (
 def main():
 
     print("\n" + "=" * 80)
-    print("HYBRID SEARCH RAG")
+    print("HYBRID SEARCH RAG CHATBOT")
     print("=" * 80)
+
 
     # ========================================================
     # Validate .env
@@ -42,11 +37,12 @@ def main():
 
     validate_config()
 
+
     # ========================================================
     # Initialize API clients
     # ========================================================
 
-    print("\nInitializing API clients...")
+    print("\nInitializing models...")
 
     embedding_model = EmbeddingModel()
 
@@ -54,59 +50,63 @@ def main():
 
     reranker_model = RerankerModel()
 
-    print("API clients initialized.")
+    llm = GroqModel()
+
+    print("\nAll models initialized.")
+
 
     # ========================================================
     # PDF extraction
     # ========================================================
 
+    print("\n" + "=" * 80)
+    print("PDF EXTRACTION")
+    print("=" * 80)
+
     elements = extract_pdf(
         PDF_PATH,
         vision_model
     )
-    print("\n" + "=" * 80)
-    print("RAW EXTRACTED ELEMENTS")
-    print("=" * 80)
 
-    for i, element in enumerate(elements):
 
-        print(f"\nELEMENT {i}")
-        print("-" * 80)
-
-        print("TYPE:", element["type"])
-        print("CONTENT:", element["text"][:500])
     # ========================================================
     # Build sections
     # ========================================================
+
+    print("\n" + "=" * 80)
+    print("BUILDING SECTIONS")
+    print("=" * 80)
 
     sections = build_sections(
         elements
     )
 
-    """print_sections(
-        sections
-    )"""
 
     # ========================================================
     # Build chunks
     # ========================================================
 
+    print("\n" + "=" * 80)
+    print("BUILDING CHUNKS")
+    print("=" * 80)
+
     chunks = build_chunks(
-    sections,
-    embedding_model
-)
+        sections,
+        embedding_model
+    )
+
+    print(
+        f"\nTotal chunks: {len(chunks)}"
+    )
+
 
     # ========================================================
-    # Print chunks
+    # Build hybrid search store
     # ========================================================
 
-    #print_chunks(
-        #chunks
-    #)
-
-    # ========================================================
-    # Temporary FAISS store
-    # ========================================================
+    print("\n" + "=" * 80)
+    print("BUILDING HYBRID SEARCH")
+    print("=" * 80)
 
     vector_store = VectorStore()
 
@@ -115,97 +115,203 @@ def main():
         embedding_model
     )
 
+
     # ========================================================
-    # Retrieval test
+    # Conversation history
+    # ========================================================
+
+    conversation_history = []
+
+
+    # ========================================================
+    # Chatbot
     # ========================================================
 
     print("\n" + "=" * 80)
-    print("RAG RETRIEVAL TEST")
-    print("Type 'exit' to quit.")
+    print("RAG CHATBOT")
     print("=" * 80)
+
+    print(
+        "\nAsk questions about the document."
+    )
+
+    print(
+        "Type 'exit' to quit."
+    )
+
 
     while True:
 
         query = input(
-            "\nAsk a question: "
+            "\nYou: "
         ).strip()
 
+
+        # ----------------------------------------------------
+        # Exit
+        # ----------------------------------------------------
+
         if query.lower() == "exit":
+
+            print(
+                "\nGoodbye!"
+            )
+
             break
+
 
         if not query:
             continue
 
-        results = vector_store.search_with_reranker(
-            query=query,
-            embedding_model=embedding_model,
-            reranker_model=reranker_model,
-            retrieval_top_k=5,
-            final_top_k=5
-        )
 
-        print(
-            "\n\n=================================================="
-        )
+        try:
 
-        print(
-            "FINAL RERANKED RESULTS"
-        )
+            # =================================================
+            # RETRIEVAL
+            # =================================================
 
-        print(
-            "=================================================="
-        )
+            results = (
+                vector_store
+                .search_with_reranker(
+
+                    query=query,
+
+                    embedding_model=
+                        embedding_model,
+
+                    reranker_model=
+                        reranker_model,
+
+                    retrieval_top_k=5,
+
+                    final_top_k=5
+                )
+            )
 
 
-        for rank, result in enumerate(
-            results["reranked"],
-            start=1
-        ):
+            # =================================================
+            # FINAL RERANKED CHUNKS
+            # =================================================
 
-            chunk = result["chunk"]
+            reranked_results = (
+                results["reranked"]
+            )
+
+
+            if not reranked_results:
+
+                print(
+                    "\nAssistant: "
+                    "I couldn't find relevant "
+                    "information in the document."
+                )
+
+                continue
+
+
+            # =================================================
+            # BUILD LLM CONTEXT
+            # =================================================
+
+            context = (
+                vector_store
+                .build_llm_context(
+                    reranked_results
+                )
+            )
+
+
+            # =================================================
+            # GENERATE ANSWER
+            # =================================================
+
+            answer = llm.generate(
+
+                query=query,
+
+                context=context,
+
+                history=
+                    conversation_history
+
+            )
+
+
+            # =================================================
+            # PRINT ANSWER
+            # =================================================
 
             print(
-                f"\n{'=' * 60}"
+                "\nAssistant:"
             )
 
             print(
-                f"FINAL RANK: {rank}"
+                answer
+            )
+            print(
+                "\nSources:"
             )
 
-            print(
-                f"RERANK SCORE: "
-                f"{result['rerank_score']:.4f}"
-            )
+            for rank, result in enumerate(
+                reranked_results,
+                start=1
+            ):
+
+                chunk = result["chunk"]
+
+                print(
+                    f"  [{rank}] "
+                    f"{chunk.get('section_title')} "
+                    f"| {chunk.get('chunk_type')} "
+                    f"| score="
+                    f"{result['rerank_score']:.4f}"
+                )
+
+            # =================================================
+            # UPDATE CONVERSATION HISTORY
+            # =================================================
+
+            conversation_history.append({
+
+                "role": "user",
+
+                "content": query
+
+            })
+
+
+            conversation_history.append({
+
+                "role": "assistant",
+
+                "content": answer
+
+            })
+
+
+            # =================================================
+            # KEEP HISTORY REASONABLE
+            # =================================================
+
+            # Keep the latest 10 messages
+            # = 5 conversation turns.
+
+            if len(
+                conversation_history
+            ) > 10:
+
+                conversation_history = (
+                    conversation_history[-10:]
+                )
+
+
+        except Exception as e:
 
             print(
-                f"SECTION: "
-                f"{chunk.get('section_title')}"
+                "\n[ERROR]"
             )
 
-            print(
-                f"PATH: "
-                f"{' > '.join(chunk.get('section_path', []))}"
-            )
-
-            print(
-                f"TYPE: "
-                f"{chunk.get('chunk_type')}"
-            )
-
-            print(
-                f"RETRIEVED BY: "
-                f"{', '.join(result['retrieval_sources'])}"
-            )
-
-            print(
-                f"ACTUAL VISUAL: "
-                f"{'YES' if chunk.get('image_base64') else 'NO'}"
-            )
-
-            print(
-                f"\nCONTENT:\n"
-                f"{chunk.get('content', '')}"
-            )
+            print(e)
 
 
 if __name__ == "__main__":

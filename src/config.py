@@ -3,7 +3,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
+GROQ_MODEL = os.getenv(
+    "GROQ_MODEL",
+    "openai/gpt-oss-120b"
+)
 # ============================================================
 # PDF CONFIGURATION
 # ============================================================
@@ -65,7 +70,8 @@ def validate_config():
         "GEMINI_API_KEY": GEMINI_API_KEY,
         "EMBEDDING_MODEL": EMBEDDING_MODEL,
         "VISION_MODEL": VISION_MODEL,
-        "RERANKER_MODEL": RERANKER_MODEL    
+        "RERANKER_MODEL": RERANKER_MODEL,
+        "GROQ_API_KEY": GROQ_API_KEY,
     }
 
     missing = [
